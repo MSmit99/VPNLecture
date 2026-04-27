@@ -1,0 +1,148 @@
+# VPN Tunneling Lab — TUN/TAP Implementation
+
+A hands-on implementation of VPN tunneling over UDP using Linux TUN and TAP virtual network interfaces, based on the [SEED Labs VPN Tunneling Lab](https://seedsecuritylabs.org/Labs_20.04/Networking/VPN/) (Ubuntu 20.04).
+
+Built as part of a group presentation covering §22.6–22.9 of the SEED Security Labs textbook — demonstrating how VPN tunnels work at both Layer 3 (TUN) and Layer 2 (TAP).
+
+---
+
+## Repository Structure
+
+```
+├── Client VM/
+│   ├── vpnclient.c         # TUN-based VPN client (Layer 3)
+│   ├── tapclient.c         # TAP-based VPN client (Layer 2)
+│   ├── setup_client.sh     # Configure tun0 interface on client
+│   ├── setup_tap_client.sh # Configure tap0 interface on client
+│   ├── add_route.sh        # Add route to private network via tun0
+│   ├── remove_route.sh     # Remove that route
+│   ├── demo3_client.sh     # TAP demo: ARP + ping across tunnel
+│   └── Makefile
+│
+└── Server VM/
+    ├── vpnserver.c         # TUN-based VPN server (Layer 3)
+    ├── tapserver.c         # TAP-based VPN server (Layer 2)
+    ├── setup_server.sh     # Configure tun0, enable IP forwarding, add route
+    ├── setup_tap_server.sh # Configure tap0 on server
+    └── Makefile
+```
+
+---
+
+## What Each Demo Covers
+
+| Demo | Section | Interface | What It Shows |
+|------|---------|-----------|---------------|
+| 1 | §22.6 | TUN | Basic tunnel — ping + telnet through encrypted UDP channel |
+| 2 | §22.7 | TUN | Two-network routing — traffic to `10.0.8.0/24` is routed through the tunnel |
+| 3 | §22.8 | TAP | Layer 2 bridging — ARP works across tunnel, not just IP |
+
+---
+
+## Setup & Usage
+
+### Prerequisites
+
+- SEED Labs Ubuntu 20.04 VM (Client and Server instances)
+- Two VMs configured: VPN Client and VPN Server
+- Root or sudo access on both VMs
+
+### 1. Compile
+
+On both VMs:
+
+```bash
+make
+```
+
+### 2. TUN Demo (§22.6 / §22.7)
+
+**Server VM:**
+```bash
+sudo ./vpnserver
+# In a second terminal:
+bash setup_server.sh
+```
+
+**Client VM:**
+```bash
+# Edit vpnclient.c first — set SERVER_IP to match your server's IP
+sudo ./vpnclient
+# In a second terminal:
+bash setup_client.sh
+bash add_route.sh     # needed for §22.7 two-network demo
+```
+
+**Test the tunnel:**
+```bash
+ping 10.4.2.5          # ping the server's TUN interface
+telnet 10.4.2.5        # telnet through the tunnel
+```
+
+To verify encapsulation, run Wireshark on the external interface — you should see ICMP wrapped inside UDP on port 55555.
+
+### 3. TAP Demo (§22.8)
+
+**Server VM:**
+```bash
+sudo ./tapserver
+bash setup_tap_server.sh
+```
+
+**Client VM:**
+```bash
+sudo ./tapclient
+bash setup_tap_client.sh
+bash demo3_client.sh   # runs arping + ping across tap0
+```
+
+The TAP tunnel passes full Ethernet frames, so ARP resolution works end-to-end — unlike the TUN tunnel which only forwards IP packets.
+
+---
+
+## Key Concepts
+
+**TUN vs TAP:**
+- `TUN` — virtual interface at Layer 3. Passes raw IP packets to/from a userspace program. Used for routing between networks.
+- `TAP` — virtual interface at Layer 2. Passes full Ethernet frames including MAC headers. Used for bridging network segments.
+
+**How the tunnel works:**
+1. A packet destined for the private network is intercepted by the TUN/TAP interface.
+2. The VPN program reads it from the file descriptor (`/dev/net/tun`).
+3. It's sent as the payload of a UDP datagram to the VPN server (port 55555).
+4. The server extracts the inner packet and writes it back to its own TUN/TAP interface, forwarding it onto the private network.
+
+**`select()` loop:** Both programs use a non-blocking `select()` loop to monitor the TUN/TAP file descriptor and the UDP socket simultaneously — whichever becomes readable first gets processed.
+
+---
+
+## Network Topology
+
+**TUN Demo (§22.6 / §22.7):**
+```
+[VPN Client]                             [VPN Server]
+  external:  10.0.2.x                     external:  10.0.2.4
+  tun0:      10.4.2.99/24  <--UDP/55555-> tun0:      10.4.2.5/24
+  route:     10.0.8.0/24 via tun0         (IP forwarding enabled)
+```
+
+**TAP Demo (§22.8):**
+```
+[VPN Client]                             [VPN Server]
+  tap0: 10.0.32.1/24       <--UDP/55555-> tap0: 10.0.32.2/24
+```
+
+---
+
+## Notes
+
+- These programs implement the tunnel **without encryption** — this is intentional for lab demonstration purposes. In production, the channel would be secured with TLS/SSL (covered in earlier sections of the SEED lab).
+- The server must be started before the client — it blocks on `recvfrom()` waiting for the client's initial "Hello" handshake.
+- Client is bound to a fixed port (55556) so the server always knows the peer address for return traffic.
+
+---
+
+## Reference
+
+- SEED Labs: [VPN Tunneling Lab](https://seedsecuritylabs.org/Labs_20.04/Networking/VPN/)
+- Textbook: *Computer & Internet Security* — Wenliang Du, Chapter 22 (VPN Tunneling)
